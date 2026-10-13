@@ -1,0 +1,24 @@
+{
+  "name": "mcp-app-kit",
+  "owner": {
+    "name": "Minelli-D",
+    "url": "https://github.com/Minelli-D"
+  },
+  "metadata": {
+    "description": "Create and deploy, from zero, a single-user web app with a login and an MCP endpoint on Kubernetes.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "mcp-app",
+      "source": "./plugins/mcp-app",
+      "description": "Create and deploy a single-user web app with a login and an MCP endpoint (for ChatGPT or Claude) on Kubernetes: a gateway, Supabase Auth, an MCP bridge and your app in one pod. Commands: new, deploy, doctor.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Minelli-D"
+      },
+      "keywords": ["mcp", "oauth", "kubernetes", "supabase-auth", "gateway", "deploy"],
+      "category": "development"
+    }
+  ]
+}

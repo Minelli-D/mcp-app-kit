@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{APP_TITLE}}: allow an app</title>
+<link rel="stylesheet" href="/oauth/consent.css">
+</head>
+<body>
+<main>
+  <h1>{{APP_TITLE}}</h1>
+  <p id="message" role="status"></p>
+
+  <form id="login" hidden>
+    <p>Log in to continue.</p>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+
+  <section id="request" hidden>
+    <p><strong id="client"></strong> wants to use {{APP_TITLE}} for you: it can read and change what its tools reach.</p>
+    <p>If you allow it, you go back to <strong id="target"></strong>.</p>
+    <p class="note">Allow only if you started this yourself, from that site.</p>
+    <div class="buttons">
+      <button id="allow" type="button">Allow</button>
+      <button id="deny" type="button" class="quiet">Deny</button>
+    </div>
+  </section>
+</main>
+<script src="/oauth/consent.js"></script>
+</body>
+</html>

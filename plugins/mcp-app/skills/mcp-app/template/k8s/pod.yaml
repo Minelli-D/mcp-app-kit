@@ -1,0 +1,382 @@
+# The app on Kubernetes. k8s/deploy.sh fills in the ${...} values from settings.env and
+# applies this file.
+#
+#   internet ──► ingress ──► gateway ──┬──► bridge  (MCP, for an MCP client or Claude) ──┬──► files (one volume)
+#                                      ├──► app     (the web pages) ───────────────┘
+#                                      └──► auth    (the login: Supabase Auth) ──► Postgres
+#
+# The four programs are one pod. They talk to each other on 127.0.0.1, and the gateway is the
+# only one with a door to the outside. The login server keeps its users in a database of its
+# own, which k8s/auth-db.sql makes: in the small Postgres at the end of this file
+# (POSTGRES_MODE=own), or in a Postgres that is already in the namespace (existing).
+#
+# Two public names reach the same gateway: the first for the app and the login, the second
+# for the MCP address. With one name, the second is the first again.
+#
+# A line that ends with "# optional: NAME" is left out when the setting NAME is empty.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${APP_NAME}-data
+  labels: { app.kubernetes.io/part-of: ${APP_NAME} }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ${STORAGE_CLASS}  # optional: STORAGE_CLASS
+  resources:
+    requests:
+      storage: ${STORAGE_SIZE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  labels: { app: ${APP_NAME}, app.kubernetes.io/part-of: ${APP_NAME} }
+spec:
+  replicas: 1
+  # The volume can be mounted by one pod at a time: the old pod stops before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: ${APP_NAME} }
+  template:
+    metadata:
+      labels: { app: ${APP_NAME}, app.kubernetes.io/part-of: ${APP_NAME} }
+    spec:
+      automountServiceAccountToken: false
+      # The namespace has other Services. Their addresses are not put into the environment of
+      # these programs, where a name could be taken for a setting.
+      enableServiceLinks: false
+      imagePullSecrets:  # optional: PULL_SECRET
+        - name: ${PULL_SECRET}  # optional: PULL_SECRET
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: gateway
+          image: ${IMAGE_GATEWAY}
+          ports:
+            - { name: http, containerPort: 9000 }
+          env:
+            - name: PUBLIC_URL
+              value: https://${APP_HOST}
+            # The name for an MCP client: /mcp answers there. The same address again means one name.
+            - name: MCP_PUBLIC_URL
+              value: https://${MCP_HOST}
+            - name: AUTH_URL
+              value: http://127.0.0.1:9999
+            - name: MCP_SECRET
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: MCP_SECRET } }
+            - name: MCP_UPSTREAM_URL
+              value: http://127.0.0.1:8000/mcp-$(MCP_SECRET)
+            - name: APP_UPSTREAM_URL
+              value: http://127.0.0.1:8080
+            # Only this user gets in, to the bridge and to the app, even if the login server knew other users.
+            - name: ALLOWED_EMAILS
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: LOGIN_EMAIL } }
+            # The name on the login page and on the page where an MCP client asks to connect.
+            - name: APP_TITLE
+              value: "${APP_TITLE}"
+            # The MCP protocol versions that go on to the bridge; any other gets the answer of an older server.
+            - name: MCP_VERSIONS
+              value: "${MCP_VERSIONS}"
+            # The paths of the app that need no login.
+            - name: OPEN_PATHS
+              value: "${OPEN_PATHS}"
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits: { memory: 128Mi }
+          securityContext: &locked
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+        # The login server: Supabase Auth. tests/test-oauth.mjs starts it with these settings.
+        - name: auth
+          image: supabase/gotrue:v2.197.0
+          env:
+            # Inside the pod only: nothing but the gateway talks to it.
+            - name: GOTRUE_API_HOST
+              value: "127.0.0.1"
+            - name: GOTRUE_API_PORT
+              value: "9999"
+            - name: API_EXTERNAL_URL
+              value: https://${APP_HOST}/auth/v1
+            - name: GOTRUE_SITE_URL
+              value: https://${APP_HOST}
+            # Without this, the login server describes itself with empty addresses.
+            - name: GOTRUE_JWT_ISSUER
+              value: https://${APP_HOST}/auth/v1
+            - name: GOTRUE_URI_ALLOW_LIST
+              value: https://${APP_HOST}/oauth/consent
+            # Its own database and its own user in the Postgres of the namespace (k8s/auth-db.sql).
+            - name: GOTRUE_DB_DRIVER
+              value: postgres
+            - name: AUTH_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: AUTH_DB_PASSWORD } }
+            - name: GOTRUE_DB_DATABASE_URL
+              value: postgres://${DB_ROLE}:$(AUTH_DB_PASSWORD)@${POSTGRES_SERVICE}:5432/${DB_NAME}
+            - name: DB_NAMESPACE
+              value: auth
+            - name: GOTRUE_JWT_SECRET
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: AUTH_JWT_SECRET } }
+            # The key that signs the login tokens. The gateway checks them with its public half.
+            - name: GOTRUE_JWT_KEYS
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: AUTH_JWT_KEYS } }
+            - name: GOTRUE_JWT_DEFAULT_GROUP_NAME
+              value: authenticated
+            - name: GOTRUE_JWT_ADMIN_ROLES
+              value: service_role
+            - name: GOTRUE_JWT_AUD
+              value: authenticated
+            - name: GOTRUE_JWT_EXP
+              value: "3600"
+            # One user, made by k8s/deploy.sh. Nobody can sign up.
+            - name: GOTRUE_DISABLE_SIGNUP
+              value: "true"
+            - name: GOTRUE_EXTERNAL_EMAIL_ENABLED
+              value: "true"
+            - name: GOTRUE_EXTERNAL_PHONE_ENABLED
+              value: "false"
+            - name: GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED
+              value: "false"
+            # No mail server: the user is confirmed when it is made.
+            - name: GOTRUE_MAILER_AUTOCONFIRM
+              value: "true"
+            # The OAuth 2.1 server. This is what lets an MCP client log in.
+            - name: GOTRUE_OAUTH_SERVER_ENABLED
+              value: "true"
+            # An MCP client registers itself the first time it connects.
+            - name: GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION
+              value: "true"
+            # The consent page, served by the gateway.
+            - name: GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH
+              value: /oauth/consent
+            # The gateway sends the visitor's address in this header. The login server counts tries per address.
+            - name: GOTRUE_RATE_LIMIT_HEADER
+              value: X-Forwarded-For
+          # The kubelet cannot reach 127.0.0.1 of the pod, so the check runs inside the container.
+          readinessProbe:
+            exec: { command: [wget, -q, -O, /dev/null, "http://127.0.0.1:9999/health"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec: { command: [wget, -q, -O, /dev/null, "http://127.0.0.1:9999/health"] }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext: *locked
+        - name: bridge
+          image: ${IMAGE_BRIDGE}
+          env:
+            - name: MCP_SECRET
+              valueFrom: { secretKeyRef: { name: ${APP_NAME}, key: MCP_SECRET } }
+            # The command that starts the MCP server over standard input and output.
+            - name: MCP_COMMAND
+              value: "${MCP_COMMAND}"
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 96Mi }
+            limits: { memory: 384Mi }
+          securityContext: *locked
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+        - name: app
+          image: ${IMAGE_APP}
+          env:
+            # The gateway does the login: the app has no secret address. It serves its pages at
+            # "/", inside the pod only.
+            # The files that the MCP server and the app share.
+            - name: DATA_DIR
+              value: /data
+          # Checked from inside, like the login server: is somebody listening on the port?
+          readinessProbe:
+            exec: { command: [python, -c, "import socket; socket.create_connection(('127.0.0.1', 8080), 2).close()"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            # It turns the pages of a PDF into pictures: that needs room.
+            limits: { memory: 512Mi }
+          securityContext: *locked
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: ${APP_NAME}-data }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+  labels: { app.kubernetes.io/part-of: ${APP_NAME} }
+spec:
+  selector: { app: ${APP_NAME} }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${APP_NAME}
+  labels: { app.kubernetes.io/part-of: ${APP_NAME} }
+  annotations:
+    cert-manager.io/cluster-issuer: ${CLUSTER_ISSUER}
+    # MCP answers can be streams: nginx must pass each piece on at once and not cut a quiet stream.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: 8m
+spec:
+  ingressClassName: ${INGRESS_CLASS}
+  # Both names, in one certificate. The two list items that name the second host are left
+  # out by k8s/deploy.sh when there is one name: the same host twice is not valid.
+  tls:
+    - hosts:
+        - ${APP_HOST}
+        - ${MCP_HOST}
+      secretName: ${APP_NAME}-tls
+  rules:
+    - host: ${APP_HOST}
+      http: &to-gateway
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ${APP_NAME}
+                port: { name: http }
+    - { host: "${MCP_HOST}", http: *to-gateway }
+---
+# Only ingress-nginx can reach the pod, and only the gateway. The bridge (8000) is reachable
+# from inside the pod only; the login server (9999) and the app (8080) do not even listen
+# on an address of the pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${APP_NAME}
+  labels: { app.kubernetes.io/part-of: ${APP_NAME} }
+spec:
+  podSelector:
+    matchLabels: { app: ${APP_NAME} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: "${INGRESS_NAMESPACE}" }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+# ---- POSTGRES_MODE=own: a small Postgres for the login server only -------------------
+# These three objects carry the label "mcp-app/part: own-postgres". With
+# POSTGRES_MODE=existing, k8s/deploy.sh leaves them out.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}-db
+  labels: { app.kubernetes.io/part-of: "${APP_NAME}", mcp-app/part: own-postgres }
+spec:
+  clusterIP: None
+  selector: { app: "${APP_NAME}-db" }
+  ports:
+    - { name: postgres, port: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${APP_NAME}-db
+  labels: { app: "${APP_NAME}-db", app.kubernetes.io/part-of: "${APP_NAME}", mcp-app/part: own-postgres }
+spec:
+  serviceName: ${APP_NAME}-db
+  replicas: 1
+  selector:
+    matchLabels: { app: "${APP_NAME}-db" }
+  template:
+    metadata:
+      labels: { app: "${APP_NAME}-db", app.kubernetes.io/part-of: "${APP_NAME}", mcp-app/part: own-postgres }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The user "postgres" of the image.
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: "${APP_NAME}", key: DB_SUPERUSER_PASSWORD } }
+            # A folder inside the volume: the volume itself may hold a "lost+found".
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec: { command: [pg_isready, -q, -U, postgres, -h, "127.0.0.1"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 25m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: db, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: run
+          emptyDir: { sizeLimit: 8Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: db
+        labels: { app.kubernetes.io/part-of: "${APP_NAME}", mcp-app/part: own-postgres }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: ${STORAGE_CLASS}  # optional: STORAGE_CLASS
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Only the pod of the app may reach this Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${APP_NAME}-db
+  labels: { app.kubernetes.io/part-of: "${APP_NAME}", mcp-app/part: own-postgres }
+spec:
+  podSelector:
+    matchLabels: { app: "${APP_NAME}-db" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: "${APP_NAME}" }
+      ports:
+        - { protocol: TCP, port: 5432 }

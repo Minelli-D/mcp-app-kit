@@ -1,0 +1,123 @@
+/* The look of the pages that the gateway writes itself: login, logout, refusals.
+   Light and dark by the setting of the device. Phone first. No picture, no font to load. */
+:root {
+  color-scheme: light dark;
+  --ink: #1b1f24;
+  --soft: #5b6470;
+  --paper: #ffffff;
+  --line: #cfd6de;
+  --accent: #1f5fbf;
+  --accent-ink: #ffffff;
+  --warn-ink: #8a2c0d;
+  --warn-paper: #fff1e8;
+  --warn-line: #f0b38f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8ecf1;
+    --soft: #a3adb9;
+    --paper: #14181d;
+    --line: #38424e;
+    --accent: #7fb0ff;
+    --accent-ink: #0d1117;
+    --warn-ink: #ffc9ad;
+    --warn-paper: #3a2318;
+    --warn-line: #7a4a33;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1.5rem 1rem calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  font: 1.0625rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+main {
+  max-width: 24rem;
+  margin: clamp(0.5rem, 8vh, 4rem) auto 0;
+}
+
+h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.625rem;
+  line-height: 1.2;
+}
+
+/* The name of the app above the heading of the login page. */
+.app {
+  margin: 0 0 0.25rem;
+  font-weight: 700;
+  color: var(--soft);
+}
+
+p {
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+.warn {
+  padding: 0.75rem 1rem;
+  color: var(--warn-ink);
+  background: var(--warn-paper);
+  border: 1px solid var(--warn-line);
+  border-radius: 0.625rem;
+}
+
+.write {
+  margin: 0 0 1rem;
+}
+
+.write label {
+  display: block;
+  margin: 0 0 0.375rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--soft);
+}
+
+/* 16px and more: a phone does not zoom in when the box gets the focus. */
+.write input {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.75rem;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.actions {
+  margin: 1.25rem 0 0;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 1rem;
+  font: inherit;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.write input:focus-visible,
+.btn:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
